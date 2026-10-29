@@ -72,6 +72,10 @@ defmodule TowerRollbar.Rollbar.Item do
         |> maybe_put_level(Keyword.get(options, :level))
         |> maybe_put_custom(Keyword.get(options, :custom))
         |> maybe_put_person(Keyword.get(options, :person))
+        |> maybe_customize_item_data(
+          options,
+          Application.get_env(:tower_rollbar, :customize_item_data_mod_fun)
+        )
     }
   end
 
@@ -127,6 +131,14 @@ defmodule TowerRollbar.Rollbar.Item do
           other -> other
         end
     }
+  end
+
+  defp maybe_customize_item_data(item, options, {module, function}) do
+    apply(module, function, [item, options])
+  end
+
+  defp maybe_customize_item_data(item, _, _) do
+    item
   end
 
   defp frames(stacktrace) do

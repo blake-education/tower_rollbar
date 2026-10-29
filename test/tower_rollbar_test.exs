@@ -490,6 +490,107 @@ defmodule TowerRollbarTest do
     end)
   end
 
+  defmodule CustomTowerRollbarItemData do
+    def call(item, options) do
+      cookies =
+        case options[:plug_conn] do
+          %Plug.Conn{} = conn -> Plug.Conn.fetch_cookies(conn).req_cookies
+          _ -> nil
+        end
+
+      item
+      |> Map.put("code_version", "92d8f13986540eb03f5484cc04386e3305e425ec")
+      |> put_in(["request", "cookies"], cookies)
+      |> put_in(["server", "host"], "us-west-2-127.0.0.1")
+      |> Map.update("custom", %{}, &Map.get(&1, "metadata", %{}))
+    end
+  end
+
+  test "can modify report with the customize_item_data_mod_fun env", %{
+    test_server: test_server
+  } do
+    put_env(:tower_rollbar, :customize_item_data_mod_fun, {CustomTowerRollbarItemData, :call})
+
+    # An ephemeral port hopefully not being in the host running this code
+    plug_port = 51111
+    url = "http://127.0.0.1:#{plug_port}/arithmetic-error"
+
+    waiting_for(fn done ->
+      TestServer.add(
+        test_server,
+        "/item",
+        via: :post,
+        to: fn conn ->
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+          assert(
+            %{
+              "data" => %{
+                "uuid" => _,
+                "code_version" => "92d8f13986540eb03f5484cc04386e3305e425ec",
+                "environment" => "test",
+                "timestamp" => _,
+                "level" => "error",
+                "body" => %{
+                  "trace" => %{
+                    "exception" => %{
+                      "class" => "ArithmeticError",
+                      "message" => "bad argument in arithmetic expression"
+                    },
+                    "frames" => frames
+                  }
+                },
+                "request" => %{
+                  "method" => "GET",
+                  "url" => ^url,
+                  "headers" => %{"user-agent" => "httpc client"},
+                  "user_ip" => "127.0.0.1",
+                  "cookies" => %{"cookie_name" => "cookie_value"}
+                },
+                "server" => %{"host" => "us-west-2-127.0.0.1"},
+                "custom" => %{
+                  "process" => %{
+                    "pid" => "#PID<" <> _,
+                    "process_label" => _,
+                    "otp_application" => _
+                  }
+                }
+              }
+            } = TowerRollbar.json_module().decode!(body)
+          )
+
+          assert(
+            %{
+              "filename" => "test/support/error_test_plug.ex",
+              "lineno" => 8,
+              "method" => "anonymous fn/2 in TowerRollbar.ErrorTestPlug.do_match/4"
+            } = List.last(frames)
+          )
+
+          done.()
+
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.resp(200, TowerRollbar.json_module().encode!(%{"ok" => true}))
+        end
+      )
+
+      capture_log(fn ->
+        start_supervised!(
+          {Bandit, plug: TowerRollbar.ErrorTestPlug, scheme: :http, port: plug_port}
+        )
+
+        {:ok, _response} =
+          :httpc.request(
+            :get,
+            {url, [{~c"user-agent", "httpc client"}, {~c"cookie", "cookie_name=cookie_value"}]},
+            [],
+            []
+          )
+      end)
+    end)
+  end
+
   test "reports throw with Bandit", %{test_server: test_server} do
     # An ephemeral port hopefully not being in the host running this code
     plug_port = 51111
